@@ -407,10 +407,15 @@ coordinator::do_ensure_table_exists(
 
 struct coordinator::main_table_schema_provider
   : public coordinator::table_schema_provider {
+    using value_layout = model::iceberg_mode::value_layout;
+
     main_table_schema_provider(
-      coordinator& parent, pandaproxy::schema_registry::context ctx)
+      coordinator& parent,
+      pandaproxy::schema_registry::context ctx,
+      value_layout layout = value_layout::flat)
       : parent(parent)
-      , ctx_(std::move(ctx)) {}
+      , ctx_(std::move(ctx))
+      , layout_(layout) {}
 
     iceberg::table_identifier
     get_table_id(const model::topic& topic) const final {
@@ -429,8 +434,11 @@ struct coordinator::main_table_schema_provider
             val_type = std::move(type_res.value());
         }
 
-        auto record_type = default_translator{}.build_type(std::move(val_type));
-        co_return std::move(record_type.type);
+        record_type rt = val_type.has_value()
+                           ? structured_data_translator{layout_}.build_type(
+                               std::move(val_type))
+                           : key_value_translator{}.build_type(std::nullopt);
+        co_return std::move(rt.type);
     }
 
     ss::sstring
@@ -441,6 +449,7 @@ struct coordinator::main_table_schema_provider
 
     const coordinator& parent;
     pandaproxy::schema_registry::context ctx_;
+    value_layout layout_;
 };
 
 ss::future<checked<std::nullopt_t, coordinator::errc>>
@@ -463,13 +472,21 @@ coordinator::sync_ensure_table_exists(
                                .properties.schema_registry_context.value_or(
                                  pandaproxy::schema_registry::default_context)
                            : pandaproxy::schema_registry::default_context;
+    auto layout = main_table_schema_provider::value_layout::flat;
+    if (topic_md) {
+        const auto& mode
+          = topic_md->get().get_configuration().properties.iceberg_mode;
+        if (!mode.is_disabled()) {
+            layout = mode.value().layout;
+        }
+    }
 
     auto res_fut = co_await ss::coroutine::as_future(do_ensure_table_exists(
       topic,
       topic_revision,
       std::move(comps),
       "sync_ensure_table_exists",
-      main_table_schema_provider{*this, std::move(sr_ctx)}));
+      main_table_schema_provider{*this, std::move(sr_ctx), layout}));
 
     if (res_fut.failed()) {
         // NOTE: we don't expect any exceptions given we're using result types,

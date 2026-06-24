@@ -187,22 +187,32 @@ record_type structured_data_translator::build_type(
                   map_keys.insert(kv.key_field.get());
               }
           });
-        for (auto& field : struct_type.fields) {
-            if (field->name == rp_struct_name) {
-                // To avoid collisions, move user fields named "redpanda" into
-                // the nested "redpanda" system field.
-                auto& system_fields = rp_struct_type(ret_type);
-                // Use the next id of the system defaults.
-                system_fields.fields.emplace_back(
-                  iceberg::nested_field::create(
-                    schemaless_next_field_id,
-                    "data",
-                    field->required,
-                    std::move(field->type)));
-                continue;
+        if (_layout == value_layout::nested) {
+            // Wrap all user fields inside a single "value" struct.
+            ret_type.fields.emplace_back(
+              iceberg::nested_field::create(
+                schemaless_next_field_id,
+                "value",
+                iceberg::field_required::no,
+                std::move(struct_type)));
+        } else {
+            for (auto& field : struct_type.fields) {
+                if (field->name == rp_struct_name) {
+                    // To avoid collisions, move user fields named "redpanda"
+                    // into the nested "redpanda" system field.
+                    auto& system_fields = rp_struct_type(ret_type);
+                    // Use the next id of the system defaults.
+                    system_fields.fields.emplace_back(
+                      iceberg::nested_field::create(
+                        schemaless_next_field_id,
+                        "data",
+                        field->required,
+                        std::move(field->type)));
+                    continue;
+                }
+                // Add the extra user-defined fields.
+                ret_type.fields.emplace_back(std::move(field));
             }
-            // Add the extra user-defined fields.
-            ret_type.fields.emplace_back(std::move(field));
         }
     }
     return record_type{
@@ -252,20 +262,28 @@ structured_data_translator::translate_data(
         co_return errc::translation_error;
     }
 
-    auto redpanda_field_idx = get_redpanda_idx(
-      std::get<iceberg::struct_type>(resolved.type));
-    // Unwrap the struct fields.
-    auto& val_struct = std::get<std::unique_ptr<iceberg::struct_value>>(
-      translated_val.value().value());
-    for (size_t i = 0; i < val_struct->fields.size(); ++i) {
-        auto& field = val_struct->fields[i];
-        if (redpanda_field_idx == i) {
-            // To avoid collisions, move user fields named "redpanda" into
-            // the nested "redpanda" system field.
-            rp_struct_value(ret_data).fields.emplace_back(std::move(field));
-            continue;
+    // Unwrap the outer struct_value returned by the deserializer.
+    auto val_struct = std::move(
+      std::get<std::unique_ptr<iceberg::struct_value>>(
+        translated_val.value().value()));
+
+    if (_layout == value_layout::nested) {
+        // Place all user fields inside a "value" struct field.
+        ret_data.fields.emplace_back(
+          std::make_optional<iceberg::value>(std::move(val_struct)));
+    } else {
+        auto redpanda_field_idx = get_redpanda_idx(
+          std::get<iceberg::struct_type>(resolved.type));
+        for (size_t i = 0; i < val_struct->fields.size(); ++i) {
+            auto& field = val_struct->fields[i];
+            if (redpanda_field_idx == i) {
+                // To avoid collisions, move user fields named "redpanda" into
+                // the nested "redpanda" system field.
+                rp_struct_value(ret_data).fields.emplace_back(std::move(field));
+                continue;
+            }
+            ret_data.fields.emplace_back(std::move(field));
         }
-        ret_data.fields.emplace_back(std::move(field));
     }
     co_return ret_data;
 }

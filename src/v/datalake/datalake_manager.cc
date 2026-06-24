@@ -84,7 +84,8 @@ make_record_translator(const model::iceberg_mode& mode) {
         return std::make_unique<key_value_translator>();
     case model::iceberg_mode::schema_mode::schema_id_prefix:
     case model::iceberg_mode::schema_mode::schema_latest:
-        return std::make_unique<structured_data_translator>();
+        return std::make_unique<structured_data_translator>(
+          mode.value().layout);
     }
 }
 } // namespace

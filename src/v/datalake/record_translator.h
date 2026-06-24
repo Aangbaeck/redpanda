@@ -15,6 +15,7 @@
 #include "datalake/schema_identifier.h"
 #include "iceberg/datatypes.h"
 #include "iceberg/values.h"
+#include "model/metadata.h"
 #include "model/record.h"
 #include "model/timestamp.h"
 
@@ -76,6 +77,12 @@ public:
 
 class structured_data_translator : public record_translator {
 public:
+    using value_layout = model::iceberg_mode::value_layout;
+
+    explicit structured_data_translator(
+      value_layout layout = value_layout::flat) noexcept
+      : _layout(layout) {}
+
     record_type
     build_type(std::optional<shared_resolved_type_t> val_type) override;
     ss::future<checked<iceberg::struct_value, errc>> translate_data(
@@ -88,12 +95,16 @@ public:
       model::timestamp_type ts_t,
       const chunked_vector<model::record_header>& headers) override;
     ~structured_data_translator() override = default;
+
+private:
+    value_layout _layout;
 };
 
-// Switches between key-value and structured translator, depending on if there
-// is an input schema.
-// XXX: this is a temporary hack for tests to pass as we transition to toggling
-// mode with a topic config! Instead, callers should explicitly choose.
+// Switches between key-value and structured translator, depending on if
+// there is an input schema.
+// XXX: this is a temporary hack for tests to pass as we transition to
+// toggling mode with a topic config! Instead, callers should explicitly
+// choose.
 class default_translator : public record_translator {
 public:
     record_type
