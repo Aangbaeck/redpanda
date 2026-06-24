@@ -492,3 +492,85 @@ TEST(IcebergModeNormalize, AllSectionsAllDefaults) {
     ASSERT_TRUE(m.has_value());
     EXPECT_EQ(to_string(*m), "key_value");
 }
+
+// --- value layout ---
+
+using vl = model::iceberg_mode::value_layout;
+
+TEST(IcebergModeLayout, ParseNested) {
+    auto m = parse("value:layout=nested");
+    ASSERT_TRUE(m.has_value());
+    EXPECT_EQ(m->value().layout, vl::nested);
+    EXPECT_EQ(m->value().mode, sm::binary);
+}
+
+TEST(IcebergModeLayout, ParseNestedWithMode) {
+    auto m = parse("value:mode=schema_id_prefix,layout=nested");
+    ASSERT_TRUE(m.has_value());
+    EXPECT_EQ(m->value().mode, sm::schema_id_prefix);
+    EXPECT_EQ(m->value().layout, vl::nested);
+}
+
+TEST(IcebergModeLayout, ParseFlatExplicit) {
+    // explicit flat is a no-op; serializes as the legacy key_value string
+    auto m = parse("value:layout=flat");
+    ASSERT_TRUE(m.has_value());
+    EXPECT_EQ(m->value().layout, vl::flat);
+    EXPECT_EQ(to_string(*m), "key_value");
+}
+
+TEST(IcebergModeLayout, ParseLayoutInKeySection) {
+    // layout is value-only; rejected in the key section
+    EXPECT_FALSE(parse("key:layout=nested").has_value());
+}
+
+TEST(IcebergModeLayout, ParseUnknownLayout) {
+    EXPECT_FALSE(parse("value:layout=sideways").has_value());
+}
+
+TEST(IcebergModeLayout, FormatNested) {
+    enabled e{};
+    e.value.layout = vl::nested;
+    model::iceberg_mode m{std::move(e)};
+    EXPECT_EQ(to_string(m), "value:layout=nested");
+}
+
+TEST(IcebergModeLayout, FormatNestedWithMode) {
+    enabled e{};
+    e.value.mode = sm::schema_id_prefix;
+    e.value.layout = vl::nested;
+    model::iceberg_mode m{std::move(e)};
+    EXPECT_EQ(to_string(m), "value:mode=schema_id_prefix,layout=nested");
+}
+
+TEST(IcebergModeLayout, StringRoundtripNested) {
+    enabled e{};
+    e.value.layout = vl::nested;
+    check_stable(model::iceberg_mode{std::move(e)});
+}
+
+TEST(IcebergModeLayout, StringRoundtripNestedWithMode) {
+    enabled e{};
+    e.value.mode = sm::schema_id_prefix;
+    e.value.layout = vl::nested;
+    check_stable(model::iceberg_mode{std::move(e)});
+}
+
+TEST(IcebergModeLayout, WireRoundtripNested) {
+    enabled e{};
+    e.value.layout = vl::nested;
+    model::iceberg_mode m{std::move(e)};
+    EXPECT_EQ(wire_roundtrip(m), m);
+}
+
+TEST(IcebergModeLayout, NestedNeedsExtendedClusterFeature) {
+    enabled e{};
+    e.value.layout = vl::nested;
+    model::iceberg_mode m{std::move(e)};
+    EXPECT_TRUE(m.needs_extended_cluster_feature());
+}
+
+TEST(IcebergModeLayout, FlatDoesNotNeedExtendedClusterFeature) {
+    EXPECT_FALSE(
+      model::iceberg_mode::key_value.needs_extended_cluster_feature());
+}
