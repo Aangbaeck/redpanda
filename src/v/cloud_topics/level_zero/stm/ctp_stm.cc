@@ -119,6 +119,11 @@ ss::future<> ctp_stm::prefix_truncate_bg() {
         model::offset target;
         if (_raft->log()->config().is_tiered_cloud()) {
             target = co_await compute_local_retention_offset();
+            // compute_gc_offset folded any space-management pin into the
+            // target above; consume it now, before the truncate, matching
+            // do_gc's one-shot contract. Disk space management re-asserts the
+            // pin while pressure persists.
+            _raft->log()->consume_cloud_gc_offset();
         } else {
             // storage.mode=cloud keeps only placeholders locally; the
             // reconciled data lives in the cloud, so trim as aggressively as

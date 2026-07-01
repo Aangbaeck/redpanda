@@ -126,6 +126,7 @@ public:
     get_reclaimable_offsets(storage::gc_config cfg) final;
 
     void set_cloud_gc_offset(model::offset) final;
+    std::optional<model::offset> consume_cloud_gc_offset() final;
 
     const storage::segment_set& segments() const final;
     storage::segment_set& segments() final;

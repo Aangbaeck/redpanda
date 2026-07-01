@@ -191,6 +191,7 @@ public:
     auto& gate() { return _compaction_housekeeping_gate; }
     chunked_vector<ss::lw_shared_ptr<segment>> cloud_gc_eligible_segments();
     void set_cloud_gc_offset(model::offset) override;
+    std::optional<model::offset> consume_cloud_gc_offset() override;
 
     ss::future<reclaimable_offsets>
     get_reclaimable_offsets(gc_config cfg) override;
@@ -210,9 +211,12 @@ public:
     /// Applies retention overrides (callers need not pre-apply them) and
     /// adjusts bogus (future) retention timestamps, mutating segment indexes
     /// when an entire segment is bogus, then returns the offset GC would
-    /// evict to -- usually derived from local retention, but when space
-    /// management has set _cloud_gc_offset that offset is returned instead
-    /// (without resetting it -- that is do_gc's responsibility).
+    /// evict to. Usually derived from local retention, but when space
+    /// management has pinned _cloud_gc_offset that offset is returned instead.
+    /// The pin is not reset here; ctp_stm consumes it separately via
+    /// consume_cloud_gc_offset after this offset is folded into its truncation
+    /// target. (do_gc handles the pin in its own eviction path, before it
+    /// reaches this computation.)
     ss::future<std::optional<model::offset>>
     compute_gc_offset(gc_config cfg) final;
 
@@ -422,6 +426,10 @@ private:
     gc_config apply_local_storage_overrides(gc_config) const;
 
     bool is_cloud_retention_active() const;
+    // True when local segments are a reclaimable cache of cloud-resident data
+    // (legacy tiered storage or tiered_cloud); broader than
+    // is_cloud_retention_active(), which is archival-only.
+    bool is_cloud_gc_active() const;
 
     // returns retention_offset(cfg) but may also first apply adjustments to
     // future timestamps if this option is turned on in configuration.

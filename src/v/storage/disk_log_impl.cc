@@ -1315,6 +1315,10 @@ bool disk_log_impl::is_cloud_retention_active() const {
            && (config().is_archival_enabled());
 }
 
+bool disk_log_impl::is_cloud_gc_active() const {
+    return is_cloud_retention_active() || config().is_tiered_cloud();
+}
+
 /*
  * applies overrides for non-cloud storage settings
  */
@@ -1779,17 +1783,20 @@ ss::future<std::optional<model::offset>> disk_log_impl::do_gc(gc_config cfg) {
      * process such as disk space management drives this process such that after
      * a round of gc has run the intent flag can be cleared.
      */
-    if (_cloud_gc_offset.has_value()) {
-        const auto offset = _cloud_gc_offset.value();
-        _cloud_gc_offset.reset();
+    // Backstop: a pin set on a partition that isn't cloud-GC-eligible at all
+    // is unexpected. Clear it and bail so it can't leak into later rounds.
+    if (_cloud_gc_offset.has_value() && !is_cloud_gc_active()) {
+        consume_cloud_gc_offset();
+        vlog(gclog.warn, "[{}] expected cloud GC to be active", config().ntp());
+        co_return std::nullopt;
+    }
 
-        if (!is_cloud_retention_active()) {
-            vlog(
-              gclog.warn,
-              "[{}] expected remote retention to be active",
-              config().ntp());
-            co_return std::nullopt;
-        }
+    // This pin drives eviction only for legacy cloud-retention (archival)
+    // topics. tiered_cloud partitions are locally collectible too, but that
+    // happens elsewhere: ctp_stm truncates and consumes the pin. do_gc must
+    // not consume it here.
+    if (_cloud_gc_offset.has_value() && is_cloud_retention_active()) {
+        const auto offset = consume_cloud_gc_offset().value();
 
         vlog(
           gclog.info,
@@ -3921,7 +3928,7 @@ disk_log_impl::disk_usage_and_reclaimable_space(gc_config input_cfg) {
           && seg->offsets().get_dirty_offset() <= retention_offset.value()) {
             retention_segments.push_back(seg);
         } else if (
-          is_cloud_retention_active()
+          is_cloud_gc_active()
           && seg->offsets().get_dirty_offset() <= max_removable) {
             available_segments.push_back(seg);
         } else {
@@ -3937,8 +3944,8 @@ disk_log_impl::disk_usage_and_reclaimable_space(gc_config input_cfg) {
          * get_reclaimable_offsets is going to be merged together.
          */
         if (
-          !config().is_read_replica_mode_enabled()
-          && is_cloud_retention_active() && seg != _segs.back()
+          !config().is_read_replica_mode_enabled() && is_cloud_gc_active()
+          && seg != _segs.back()
           && seg->offsets().get_dirty_offset() <= max_removable
           && local_retention_offset.has_value()
           && seg->offsets().get_dirty_offset()
@@ -4279,8 +4286,8 @@ ss::future<usage_report> disk_log_impl::disk_usage(gc_config cfg) {
 chunked_vector<ss::lw_shared_ptr<segment>>
 disk_log_impl::cloud_gc_eligible_segments() {
     vassert(
-      is_cloud_retention_active(),
-      "Expected {} to have cloud retention enabled",
+      is_cloud_gc_active(),
+      "Expected cloud GC to be active for {}",
       config().ntp());
 
     constexpr size_t keep_segs = 1;
@@ -4313,7 +4320,7 @@ disk_log_impl::cloud_gc_eligible_segments() {
 }
 
 void disk_log_impl::set_cloud_gc_offset(model::offset offset) {
-    if (!is_cloud_retention_active()) {
+    if (!is_cloud_gc_active()) {
         vlog(
           stlog.debug,
           "Ignoring request to set GC offset on non-cloud enabled partition "
@@ -4331,6 +4338,12 @@ void disk_log_impl::set_cloud_gc_offset(model::offset offset) {
     _cloud_gc_offset = offset;
 }
 
+std::optional<model::offset> disk_log_impl::consume_cloud_gc_offset() {
+    auto pin = _cloud_gc_offset;
+    _cloud_gc_offset.reset();
+    return pin;
+}
+
 ss::future<reclaimable_offsets>
 disk_log_impl::get_reclaimable_offsets(gc_config cfg) {
     // protect against concurrent log removal with housekeeping loop
@@ -4338,7 +4351,7 @@ disk_log_impl::get_reclaimable_offsets(gc_config cfg) {
 
     reclaimable_offsets res;
 
-    if (!is_cloud_retention_active()) {
+    if (!is_cloud_gc_active()) {
         vlog(
           stlog.debug,
           "Reporting no reclaimable offsets for non-cloud partition {}",
@@ -4540,7 +4553,7 @@ size_t disk_log_impl::reclaimable_size_bytes() const {
      * local retention size may change. catch these before reporting potentially
      * stale information.
      */
-    if (!is_cloud_retention_active()) {
+    if (!is_cloud_gc_active()) {
         return 0;
     }
     if (config().is_read_replica_mode_enabled()) {

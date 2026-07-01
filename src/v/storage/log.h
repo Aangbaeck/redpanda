@@ -234,6 +234,13 @@ public:
     get_reclaimable_offsets(gc_config cfg) = 0;
     virtual void set_cloud_gc_offset(model::offset) = 0;
 
+    /// Take the pin installed by set_cloud_gc_offset: return its value (if any)
+    /// and clear the field, per the space-management contract that the pin is a
+    /// one-shot intent. do_gc uses the returned offset to drive legacy
+    /// eviction; ctp_stm discards it, having already folded the pin into its
+    /// truncation target via compute_gc_offset.
+    virtual std::optional<model::offset> consume_cloud_gc_offset() = 0;
+
     /// Prepare for GC-driven prefix truncation: do whatever work `gc_config`
     /// implies and return the offset that GC would evict up to (std::nullopt
     /// when no eviction is warranted). The offset is usually derived from
